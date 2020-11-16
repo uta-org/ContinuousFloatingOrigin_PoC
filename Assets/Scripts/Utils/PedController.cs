@@ -6,6 +6,7 @@ using UnityEngine;
 
 namespace CFO.Utils
 {
+    [RequireComponent(typeof(FlyCamera))]
     public class PedController : MonoBehaviour
     {
         private bool isFoundGroundExecuted;
@@ -13,16 +14,24 @@ namespace CFO.Utils
         private CharacterController characterController;
         private Coroutine m_findGroundCoroutine;
 
-        [SerializeField]
-        private TerrainGenerator terrainGenerator;
+        [SerializeField] private TerrainGenerator terrainGenerator;
+        //[SerializeField] private FlyCamera flyCamera;
 
         //public NoClipController noClip;
 
         private void Awake()
         {
+            var flyCamera = GetComponent<FlyCamera>();
+            flyCamera.OnLeaveFlyMode += OnLeaveFlyMode;
+
             characterController = GetComponent<CharacterController>();
             terrainGenerator.OnFinishGeneration += OnFinishGeneration;
             //TerrainGenerator.Instance.OnTerrainUpdated += OnTerrainUpdated;
+        }
+
+        private void OnLeaveFlyMode()
+        {
+            FindGround();
         }
 
         private void OnFinishGeneration()

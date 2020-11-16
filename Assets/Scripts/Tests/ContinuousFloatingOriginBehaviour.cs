@@ -6,13 +6,20 @@ using CFO.Attributes;
 using CFO.Utils;
 using HarmonyLib;
 using UnityEngine;
-using UnityEngine.Internal;
+using static CFO.Tests.TransformInjection;
 
 namespace CFO.Tests
 {
+    // [RequireComponent(typeof(CharacterController))] // TODO: Require also RigidBody, I need to look if RigidBodies are always present with CharacterControllers.
     public class ContinuousFloatingOriginBehaviour : MonoBehaviour
     // : Transform
     {
+#if DEBUG
+        public const bool DEBUG_MODE = true;
+#else
+        public const bool DEBUG_MODE = false;
+#endif
+
         // TODO: https://gitlab.com/cosmochristo/harmony/-/blob/master/PlayerMove.cs (use something from here?)
         // https://github.com/qkmaxware/Spaceworks
 
@@ -21,19 +28,20 @@ namespace CFO.Tests
         public static Vector3 StoredPosition { get; set; } // TODO: Private set?
 
         //public Vector3 rootTransformPosition;
-        //public Vector3 storedPosition;
+        public Vector3 storedPosition;
 
         public bool preciseColliders = true;
-        public bool useGravity = false;
+        public bool simulateGravity = true;
+
+        private bool lastUseGravity;
+
+        public bool debugMode = DEBUG_MODE;
 
         private Vector3 transformPosition;
         private Vector3 lastTransformPosition;
         private Vector3 deltaTransformPosition;
 
         public ObservableCollection<Transform> Transforms { get; } = new ObservableCollection<Transform>();
-
-        //public ObservableCollection<PropertyInfo> Properties { get; } = new ObservableCollection<PropertyInfo>();
-        //public ObservableCollection<FieldInfo> Fields { get; } = new ObservableCollection<FieldInfo>();
         public ObservableCollection<MemberInfo> Members { get; } = new ObservableCollection<MemberInfo>();
 
         public Transform RootTransform { get; private set; }
@@ -45,11 +53,44 @@ namespace CFO.Tests
         private bool isRigidBody;
 
         private Rigidbody body;
+        private CharacterController controller;
+
+        #region "PlayerMove.cs"
+
+        // Multiplier to each movement input
+        private readonly float speed = 7.0f;
+
+        //private GameObject player;
+        //private GameObject SceneRoot;
+
+        // Layer mask for ray casting
+        private int layerMask;
+
+        // Horizontal movement deltas
+        private float deltaX;
+
+        private float deltaZ;
+        private float speedAdj;
+
+        // Current reverse transform
+        private Vector3 reverseMovement;
+
+        // Rotated reverse transform
+        private Vector3 rotated_transform = new Vector3(0f, 0f, 0f);
+
+        private readonly Vector3 player_position = new Vector3(0f, 0f, 0f);
+        private RaycastHit rayCollision;
+
+        #endregion "PlayerMove.cs"
 
         private void Awake()
         {
             if (Instance != null) throw new Exception("Singleton rules!");
             Instance = this;
+
+            DebugMode = debugMode;
+
+            controller = GetComponent<CharacterController>();
 
             body = GetComponent<Rigidbody>();
             isRigidBody = body != null;
@@ -59,9 +100,7 @@ namespace CFO.Tests
 
             Harmony = new Harmony("net.z3nth10n.cfo");
             TransformInjection.Harmony = Harmony;
-            TransformInjection.Patch();
-
-            //Harmony.PatchAll(Assembly.GetExecutingAssembly());
+            Patch();
 
             RootTransform = new GameObject("Root").transform;
 
@@ -69,28 +108,86 @@ namespace CFO.Tests
             LookupTypes();
         }
 
+        /// <summary>
+        /// Do not use FixedUpdate here because performance drops dramatically (on dual core i5 macbook pro).
+        /// <seealso cref="PlayerView.cs"/>
+        /// </summary>
         private void Update()
         {
+            if (isRigidBody && lastUseGravity != body.useGravity)
+            {
+                // TODO: Check also for constraints changes
+                ToggleCharacterController(body.useGravity);
+                lastUseGravity = body.useGravity;
+            }
+
+            if (IsFlyMode()) return; // Don't execute if CharacterController, but this case isn't covered yet so @todo.
+
+            // Get the horizontal movement changes from keyboard and
+            // negate them so we can move scene in reverse
+            deltaX = -Input.GetAxis("Horizontal");
+            deltaZ = -Input.GetAxis("Vertical");
+
+            // Two alternatives to running script flat out:
+            // 1. Only process floating origin movement if there is navigation input
+            //   change and it is above noise/shake threshold.
+            //   Performance: don't really want a sqr root here -
+            //   or even a squares comparision.
+            //if ((Mathf.Abs(deltaX) + Mathf.Abs(deltaZ)) > NAV_SHAKE_THRESHOLD)
+            //{
+            // or
+            // 2. Time based method:
+
+            speedAdj = Time.deltaTime * speed;
+
+            // Scene reverse transform for floating origin navigation.
+            // Make movement delta proportional to time since last move and speed factor.
+            // Peformance: changed this to assignment so no mem alloc and GC needed, and
+            // 2 multiplies a bit faster than multiply by 3D vector.
+            reverseMovement.x = deltaX * speedAdj;
+            reverseMovement.z = deltaZ * speedAdj;
+
+            /*// Uncomment to do player collision detection.
+              //If player collided with close object then ...
+            if (Physics.Raycast(player_position, player.transform.TransformDirection(Vector3.forward), out rayCollision, COLLISION_DISTANCE, layerMask)
+                && (rayCollision.distance < COLLISION_DISTANCE))
+            {
+                /// ... bounce back a little from collision
+                transform.Translate(-rotated_transform*COLLISION_ADJUST);
+            }
+            else // no collision, so move scene in reverse
+            {*/
+            // use player camera rotation to modify reverse movement vector so that player forward corresponds to forward movement input
+            rotated_transform = Quaternion.Euler(transform.localEulerAngles) * reverseMovement;
+
+            // SetActive logic is done on LateUpdate.
+
+            // Use this switch to reduce performance overhead:
+            // no need for unity to do collider processing when translacte whole scene
+            //SceneRoot.SetActive(false);
+
+            // Move the scene to the new position by changing scene parent object transform.
+            transform.Translate(rotated_transform);
+
+            // restore active scene
+            //SceneRoot.SetActive(true);
+            /*}*/
         }
 
         private void FixedUpdate()
         {
-            //transformPosition = StoredPosition;
-            //if (firstUpdate) transformPosition.y = 0;
-            //firstUpdate = false;
+            if (simulateGravity && !IsFlyMode())
+            {
+                var delta = Physics.gravity * Time.fixedDeltaTime;
 
-            //deltaTransformPosition = lastTransformPosition - transformPosition;
-            //lastTransformPosition = transformPosition;
-
-            if (isRigidBody && body.useGravity && useGravity)
-                StoredPosition += Physics.gravity * Time.fixedDeltaTime;
+                StoredPosition -= delta;
+                RootTransform.position -= delta;
+            }
         }
 
         private void LateUpdate()
         {
             transformPosition = StoredPosition;
-            //if (firstUpdate) transformPosition.y = 0;
-            //firstUpdate = false;
 
             deltaTransformPosition = lastTransformPosition - transformPosition;
             lastTransformPosition = transformPosition;
@@ -98,16 +195,20 @@ namespace CFO.Tests
             // Update all the Vectors marked with OriginVector attribute
             foreach (var member in Members)
             {
-                SetPosition(member, StoredPosition);
+                //SetPosition(member, StoredPosition, false);
+
+                // var d = new Vector3(-deltaTransformPosition.x, deltaTransformPosition.y, -deltaTransformPosition.z);
+                SetPosition(member, -deltaTransformPosition, true);
             }
+
+            deltaTransformPosition.y = 0;
 
             // Only for debugging in inspector
             //rootTransformPosition += deltaTransformPosition;
-            //storedPosition = StoredPosition;
+            storedPosition = StoredPosition;
 
             // Only update X, Z values, @TODO: do this also for Y values
-            if (!useGravity)
-                deltaTransformPosition.y = 0;
+            // if (!simulateGravity)
 
             //Debug.Log(deltaTransformPosition);
 
@@ -117,8 +218,19 @@ namespace CFO.Tests
             if (!preciseColliders) RootTransform.gameObject.SetActive(true);
 
             // Force all freezes
-            if (isRigidBody && useGravity)
+            if (isRigidBody)
                 body.constraints = RigidbodyConstraints.FreezeAll;
+        }
+
+        private void ToggleCharacterController(bool isGravityEnabled)
+        {
+            if (controller == null) return;
+            controller.enabled = !isGravityEnabled;
+        }
+
+        private bool IsFlyMode()
+        {
+            return controller != null && controller.enabled || body != null && !body.useGravity;
         }
 
         // TODO: Call this every x secs in order to find new Transforms
@@ -135,8 +247,6 @@ namespace CFO.Tests
         {
             bool CheckValidType(MemberInfo member)
             {
-                //var memberType = member.GetMemberUnderlyingType();
-
                 var originAttr = member.GetAttribute<OriginVectorAttribute>();
                 if (originAttr == null)
                 {
@@ -178,148 +288,24 @@ namespace CFO.Tests
             Debug.Log($"Lookup {Members.Count} members!");
         }
 
-        private void SetPosition(MemberInfo member, Vector3 value)
+        private void SetPosition(MemberInfo member, Vector3 value, bool sum)
         {
-            // TODO: Tests
+            // TODO: This make the terrain generator to do weird things
             var instances = FindObjectsOfType(member.DeclaringType);
             if (instances?.Length == 0) return;
             // ReSharper disable once PossibleNullReferenceException
             foreach (var instance in instances)
             {
+                if (sum)
+                {
+                    var v = member.GetValue<Vector3>(instance);
+                    value += v;
+                }
+
                 member.SetValue(instance, value);
             }
         }
-
-        //public class AssociatedMemberInfo
-        //{
-        //    private AssociatedMemberInfo()
-        //    {
-        //    }
-
-        //    public AssociatedMemberInfo(object o, MemberInfo member)
-        //    {
-        //        Object = o;
-        //        Member = member;
-        //    }
-
-        //    public object Object { get; }
-        //    public MemberInfo Member { get; }
-        //}
     }
 
     // https://stackoverflow.com/questions/44509636/convert-a-transform-to-a-recttransform (custom transform didn't worked)
-
-    public static class TransformInjection
-    {
-        public static Harmony Harmony { get; set; }
-
-        private static MethodInfo getMethod;
-
-        public static bool GetRealPosition { get; set; } = true;
-
-        private static bool obtainedMethod = false;
-
-        // This can't be done: https://stackoverflow.com/a/2957428/3286975
-        //public static MethodInfo GetMethod
-        //{
-        //    get
-        //    {
-        //        if (getMethod == null && ContinuousFloatingOriginBehaviour.Instance != null && !obtainedMethod)
-        //        {
-        //            var transform = ContinuousFloatingOriginBehaviour.Instance.transform;
-        //            Debug.Log(transform.GetType().FullName);
-        //            getMethod = transform.GetType().GetMethod("get_position_Injected", BindingFlags.NonPublic);
-        //            if (getMethod == null) Debug.LogWarning("Couldn't find get_position_Injected method on Transform.");
-        //            obtainedMethod = true;
-        //        }
-        //        return getMethod;
-        //    }
-        //}
-
-        private static bool get(ref Vector3 __result)
-        {
-            // Keep this, but we won't override the get method by the moment.
-
-            if (GetRealPosition) return true;
-            //if (ContinuousFloatingOriginBehaviour.Instance != null) GetMethod?.InvokeWithOutParam(ContinuousFloatingOriginBehaviour.Instance.transform, out __result);
-            __result = ContinuousFloatingOriginBehaviour.StoredPosition;
-            GetRealPosition = true;
-            return false;
-        }
-
-        private static bool set(Transform __instance, Vector3 value)
-        {
-            try
-            {
-                if (IsTransform(__instance)) return true;
-                //Debug.Log("3: " + value);
-                ContinuousFloatingOriginBehaviour.StoredPosition = value;
-                return false;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogException(ex); // TODO: fix MissingReferenceException
-                /*
-                    MissingReferenceException: The object of type 'ContinuousFloatingOriginBehaviour' has been destroyed but you are still trying to access it.
-                    Your script should either check if it is null or you should not destroy the object.
-                    CFO.Tests.TransformInjection.set (UnityEngine.Transform __instance, UnityEngine.Vector3 value) (at Assets/Scripts/Tests/ContinuousFloatingOriginBehaviour.cs:211)
-                    UnityEngine.Debug:LogException(Exception)
-                    CFO.Tests.TransformInjection:set(Transform, Vector3) (at Assets/Scripts/Tests/ContinuousFloatingOriginBehaviour.cs:219)
-                    UnityEngine.GUIUtility:ProcessEvent(Int32, IntPtr, Boolean&)
-                 */
-                return true;
-            }
-        }
-
-        private static bool IsTransform(Transform __instance)
-        {
-            var transform = ContinuousFloatingOriginBehaviour.Instance?.transform;
-            if (transform == null || __instance != transform) return true;
-            return false;
-        }
-
-        private static bool Translate(Transform __instance, Vector3 translation, [DefaultValue("Space.Self")] Space relativeTo)
-        {
-            if (IsTransform(__instance)) return true;
-            //var pos = ContinuousFloatingOriginBehaviour.StoredPosition;
-            // __instance.position;
-            //var r = relativeTo == Space.World
-            //        ? set(__instance, pos + translation)
-            //        : set(__instance, pos + __instance.TransformDirection(translation));
-
-            if (relativeTo == Space.World)
-                ContinuousFloatingOriginBehaviour.StoredPosition += translation;
-            else
-                ContinuousFloatingOriginBehaviour.StoredPosition += __instance.TransformDirection(translation);
-
-            //Debug.Log(relativeTo);
-
-            //Debug.Log("1: " + translation);
-            //Debug.Log("2: " + ContinuousFloatingOriginBehaviour.StoredPosition);
-
-            // Debug.Log(pos);
-            // Debug.Log(__instance.position);
-
-            // Debug.Log(pos);
-            //Debug.Log("2: " + translation);
-
-            return false;
-        }
-
-        public static void Patch(bool patchGet = true, bool patchSet = true)
-        {
-            if (patchGet)
-                Harmony.Patch(
-                    typeof(Transform).GetProperty("position")?.GetGetMethod(false),
-                    new HarmonyMethod(typeof(TransformInjection).GetMethod("get", BindingFlags.NonPublic | BindingFlags.Static)));
-
-            if (patchSet)
-                Harmony.Patch(typeof(Transform).GetProperty("position")?.GetSetMethod(false),
-                    new HarmonyMethod(typeof(TransformInjection).GetMethod("set", BindingFlags.NonPublic | BindingFlags.Static)));
-
-            Harmony.Patch(typeof(Transform).GetMethods()
-                .FindMethod("Translate", typeof(Vector3), typeof(Space)),
-                new HarmonyMethod(typeof(TransformInjection).GetMethod("Translate", BindingFlags.NonPublic | BindingFlags.Static)));
-        }
-    }
 }

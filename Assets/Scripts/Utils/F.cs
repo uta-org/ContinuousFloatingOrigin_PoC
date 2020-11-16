@@ -30,6 +30,21 @@ namespace CFO.Utils
                 .FirstOrDefault(a => a.GetType() == typeof(T)) as T;
         }
 
+        public static T GetValue<T>(this MemberInfo memberInfo, object forObject)
+        {
+            switch (memberInfo.MemberType)
+            {
+                case MemberTypes.Field:
+                    return (T)((FieldInfo)memberInfo).GetValue(forObject);
+
+                case MemberTypes.Property:
+                    return (T)((PropertyInfo)memberInfo).GetValue(forObject);
+
+                default:
+                    throw new NotImplementedException();
+            }
+        }
+
         public static void SetValue<T>(this MemberInfo memberInfo, object forObject, T value)
         {
             switch (memberInfo.MemberType)

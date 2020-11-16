@@ -1,4 +1,5 @@
-﻿using CFO.Tests;
+﻿using System;
+using CFO.Tests;
 using UnityEngine;
 
 namespace CFO.Utils
@@ -25,6 +26,10 @@ namespace CFO.Utils
         //private Vector3 lastPosition;
 
         private Rigidbody body;
+
+        public event Action OnEnterFlyMode = delegate { };
+
+        public event Action OnLeaveFlyMode = delegate { };
 
         private void Awake()
         {
@@ -81,6 +86,9 @@ namespace CFO.Utils
         {
             body.useGravity = !active;
             autoFly = active;
+
+            if (active) OnEnterFlyMode();
+            else OnLeaveFlyMode();
         }
     }
 }
